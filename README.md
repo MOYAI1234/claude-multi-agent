@@ -12,15 +12,38 @@ Claude Code (Desktop App)
 
 Claude Code acts as the router. You never leave the app.
 
-## Routing Rules
+## How Routing Works
 
-| Trigger | Goes to |
-|---------|---------|
-| Code changes, multi-file debugging | `/codex:rescue` |
-| Image recognition, fixed-format extraction | `/trae:run` |
-| Planning, analysis, writing, judgment calls | Claude (handles directly) |
+Routing is enforced at the **mechanism level** via a `UserPromptSubmit` hook — not by relying on Claude's memory or instructions.
 
-The routing is automatic — Claude decides based on task type and delegates without asking.
+```
+User sends message
+      ↓
+UserPromptSubmit hook fires  ← happens BEFORE Claude reads the message
+      ↓
+routing_check.py classifies the task (keyword rules)
+      ↓
+Injects routing suggestion into Claude's context
+      ↓
+Claude presents recommendation → user confirms
+      ↓
+Routes to the right executor
+```
+
+This matters because text instructions in `CLAUDE.md` compete with Claude's trained instinct to answer directly. A hook runs before Claude even sees the message — Claude cannot skip it.
+
+### Routing Rules
+
+| Task type | Recommended executor |
+|-----------|---------------------|
+| Image recognition, screenshots, OCR | `/trae:run` (Doubao) |
+| Code changes, multi-file debugging, implementation | `/codex:rescue` (Codex) |
+| Explicit: "让 Codex 处理" / "用豆包" | Direct route, no confirmation |
+| Planning, analysis, writing, judgment calls | Claude handles directly |
+
+Priority: explicit override → Trae → Codex → Claude self.
+
+When Claude routes to itself, the hook exits silently — no interruption.
 
 ## What's in this repo
 
@@ -28,7 +51,8 @@ The routing is automatic — Claude decides based on task type and delegates wit
 |------|-------------|
 | `plugins/trae/` | Claude Code plugin for Trae Agent (Doubao) |
 | `trae_config.example.json` | Trae Agent config template |
-| `CLAUDE.md.template` | Routing rules for your global `~/.claude/CLAUDE.md` |
+| `routing_check.py` | Hook script — classifies tasks and injects routing suggestions |
+| `CLAUDE.md.template` | Minimal routing config for `~/.claude/CLAUDE.md` (3 lines, no logic) |
 | `install.sh` | One-command installer |
 
 > The Codex plugin is maintained by OpenAI at [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).
@@ -52,15 +76,13 @@ In Claude Code, run:
 /codex:setup
 ```
 
-> If your Claude Code version doesn't support `/plugin`, see [manual install](docs/manual-install.md).
+> If your Claude Code version does not support `/plugin`, see [manual install](docs/manual-install.md).
 
 ### Step 2 — Install Trae plugin
 
 ```bash
-# Install trae-agent
 pip install git+https://github.com/bytedance/trae-agent.git
 
-# Clone this repo and run installer
 git clone https://github.com/MOYAI1234/claude-multi-agent
 cd claude-multi-agent
 bash install.sh
@@ -68,17 +90,47 @@ bash install.sh
 
 Edit `~/.trae_config.json` and fill in your Volcengine API key.
 
-### Step 3 — Add routing rules
+### Step 3 — Set up the routing hook
 
-Append `CLAUDE.md.template` to your global `~/.claude/CLAUDE.md`:
+Copy the routing script:
+
+```bash
+cp routing_check.py ~/.claude/routing_check.py
+```
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.claude/routing_check.py",
+            "timeout": 5,
+            "statusMessage": "Routing check..."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> On Windows, use the full path: `python C:/Users/<you>/.claude/routing_check.py`
+
+### Step 4 — Add minimal routing config to CLAUDE.md
 
 ```bash
 cat CLAUDE.md.template >> ~/.claude/CLAUDE.md
 ```
 
-### Step 4 — Restart Claude Code
+The template is 3 lines — routing logic lives in the hook script, not in text instructions.
 
-Restart the desktop app, then verify:
+### Step 5 — Restart Claude Code
+
 ```
 /trae:setup
 /codex:setup
@@ -87,15 +139,24 @@ Restart the desktop app, then verify:
 ## Usage
 
 ```
+# Explicit routing
 /trae:run 识别这张截图里的文字
-/trae:run 把这个 JSON 转成 CSV 格式
-
-/codex:rescue 找出为什么这个函数返回 null
 /codex:rescue 重构 auth 模块，提取公共逻辑
-/codex:review
+
+# Natural language — hook suggests routing automatically
+"分析这张截图"          →  hook recommends /trae:run
+"修复这个 null bug"     →  hook recommends /codex:rescue
+"写一份月度复盘报告"    →  Claude handles directly, hook stays silent
 ```
 
-Or just describe your task naturally — Claude will route it automatically.
+## Why hook instead of CLAUDE.md instructions?
+
+| Approach | Reliability | Reason |
+|----------|-------------|--------|
+| Text instructions in CLAUDE.md | Unreliable | Competes with Claude's trained instinct to answer directly |
+| `UserPromptSubmit` hook | Reliable | Runs at the process level before Claude processes the message |
+
+The hook approach moves routing from Claude's "memory" to executable code.
 
 ## License
 
