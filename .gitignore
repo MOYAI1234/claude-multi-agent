@@ -1,0 +1,4 @@
+# Never commit real config with API keys
+trae_config.json
+.env
+*.local
